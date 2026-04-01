@@ -6,9 +6,10 @@ pub fn build(b: *std.Build) void {
 
     // Pull in the raylib-zig dependency we declared in build.zig.zon
     const raylib_dep = b.dependency("raylib_zig", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    .target = target,
+    .optimize = optimize,
+    .linux_display_backend = .X11,
+});
 
     const raylib = raylib_dep.module("raylib");
     const raylib_artifact = raylib_dep.artifact("raylib");
