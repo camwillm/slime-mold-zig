@@ -1,46 +1,64 @@
-//! By convention, main.zig is where your main function lives in the case that
-//! you are building an executable. If you are making a library, the convention
-//! is to delete this file and start with root.zig instead.
+const std = @import("std");
+const rl = @import("raylib");
+const Sim = @import("sim.zig").Sim;
 
 pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    // GPA is Zig's general purpose allocator — tracks allocations and catches leaks
+    // In a release build you'd swap this for a faster allocator
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+    const WIDTH = 800;
+    const HEIGHT = 800;
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+    // Initialize the sim — allocates grid and agents
+    var sim = try Sim.init(allocator, WIDTH, HEIGHT);
+    defer sim.deinit();
 
-    try bw.flush(); // Don't forget to flush!
-}
+    // Diffuse buffer — separate allocation so decayAndDiffuse can double buffer
+    const buffer = try allocator.alloc(f32, WIDTH * HEIGHT);
+    defer allocator.free(buffer);
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
+    // RNG for the step function's jitter
+    var rng = std.rand.Xoshiro256.init(12345);
 
-test "use other module" {
-    try std.testing.expectEqual(@as(i32, 150), lib.add(100, 50));
-}
+    // Open the window
+    rl.initWindow(WIDTH, HEIGHT, "slime-mold-zig");
+    defer rl.closeWindow();
+    rl.setTargetFPS(60);
 
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
+    // Pixel buffer — one u8 per pixel, grayscale, written to a raylib texture
+    const pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
+    defer allocator.free(pixels);
+
+    // Create a texture we'll update every frame with the trail map
+    // Textures live on the GPU — updating one each frame is fast
+    var texture = rl.loadTextureFromImage(rl.genImageColor(WIDTH, HEIGHT, rl.Color.black));
+    defer rl.unloadTexture(texture);
+
+    // Main loop — runs until you close the window
+    while (!rl.windowShouldClose()) {
+        // Advance the simulation one tick
+        sim.step(&rng);
+        sim.decayAndDiffuse(buffer);
+
+        // Convert trail map (f32 0-255) to RGBA pixels for the texture
+        for (0..WIDTH * HEIGHT) |i| {
+            const val: u8 = @intFromFloat(@min(sim.grid.cells[i], 255.0));
+            pixels[i * 4 + 0] = val; // R
+            pixels[i * 4 + 1] = val; // G
+            pixels[i * 4 + 2] = val; // B
+            pixels[i * 4 + 3] = 255; // A — fully opaque
         }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+
+        // Push pixel data to the GPU texture
+        rl.updateTexture(texture, pixels.ptr);
+
+        rl.beginDrawing();
+        rl.clearBackground(rl.Color.black);
+        rl.drawTexture(texture, 0, 0, rl.Color.white);
+        rl.drawFPS(10, 10);
+        rl.endDrawing();
+    }
 }
-
-const std = @import("std");
-
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
-const lib = @import("slime_mold_zig_lib");

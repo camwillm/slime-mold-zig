@@ -4,7 +4,8 @@ A real-time Physarum polycephalum (slime mold) simulation written in Zig, based 
 
 I kept seeing videos of slime mold behavior on TikTok — a single cell with no brain solving mazes, rebuilding the Tokyo subway, predicting the future sand had to build it myself.
 
-![demo](assets/demo.gif)
+![demo]cd ~/projects/slime-mold-zig
+zig fetch --save https://github.com/Not-Nik/raylib-zig/archive/devel.tar.gz(assets/demo.gif)
 
 ## What is Physarum?
 
