@@ -60,7 +60,7 @@ pub const Sim = struct {
         const agents = try allocator.alloc(Agent, AGENT_COUNT);
 
         // Spawn agents in a circle at center
-        var rng = std.rand.DefaultPrng.init(42);
+        var rng = std.Random.DefaultPrng.init(42);
         const rand = rng.random();
         const cx = @as(f32, @floatFromInt(width)) / 2.0;
         const cy = @as(f32, @floatFromInt(height)) / 2.0;
@@ -87,7 +87,7 @@ pub const Sim = struct {
         self.allocator.free(self.agents);
     }
 
-    pub fn step(self: *Sim, rng: *std.rand.Xoshiro256) void {
+    pub fn step(self: *Sim, rng: *std.Random.Xoshiro256) void {
         for (self.agents) |*agent| {
             const fl = sampleTrail(&self.grid, agent.x, agent.y, agent.angle + SENSOR_ANGLE, SENSOR_DISTANCE);
             const f  = sampleTrail(&self.grid, agent.x, agent.y, agent.angle, SENSOR_DISTANCE);

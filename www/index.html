@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slime Mold</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+        }
+        #status {
+            color: #2a2;
+            font-family: monospace;
+            font-size: 13px;
+            margin-top: 10px;
+            height: 16px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="status">loading...</div>
+    <script>
+    const WIDTH = 800;
+    const HEIGHT = 800;
+
+    async function main() {
+        const status = document.getElementById('status');
+
+        const response = await fetch('slime.wasm');
+        const bytes = await response.arrayBuffer();
+        const { instance } = await WebAssembly.instantiate(bytes);
+        const exports = instance.exports;
+
+        exports.init(WIDTH, HEIGHT);
+
+        const canvas = document.getElementById('canvas');
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.createImageData(WIDTH, HEIGHT);
+        const pixels = imageData.data;
+
+        // Cache grid view once — memory won't grow after init
+        const ptr = exports.getGridPtr();
+        const len = exports.getGridLen();
+        const grid = new Float32Array(exports.memory.buffer, ptr, len);
+
+        // Color LUT: trail value 0-255 -> bioluminescent green-white
+        // Low values: deep green; high values: bright white-green
+        const lut = new Uint8Array(256 * 3);
+        for (let v = 0; v < 256; v++) {
+            const t = v / 255;
+            lut[v * 3]     = (t * t * 180)       | 0; // R: rises slowly, warm at peak
+            lut[v * 3 + 1] = (t * 255)            | 0; // G: full green channel
+            lut[v * 3 + 2] = (t * t * 80 + t * 60) | 0; // B: slight cyan at top
+        }
+
+        let frames = 0;
+        let lastTime = performance.now();
+
+        function frame() {
+            exports.step();
+
+            for (let i = 0; i < len; i++) {
+                const raw = grid[i];
+                const v = raw > 255 ? 255 : raw < 0 ? 0 : raw | 0;
+                const li = v * 3;
+                const pi = i << 2;
+                pixels[pi]     = lut[li];
+                pixels[pi + 1] = lut[li + 1];
+                pixels[pi + 2] = lut[li + 2];
+                pixels[pi + 3] = 255;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+
+            frames++;
+            const now = performance.now();
+            if (now - lastTime >= 1000) {
+                status.textContent = `${frames} fps`;
+                frames = 0;
+                lastTime = now;
+            }
+
+            requestAnimationFrame(frame);
+        }
+
+        status.textContent = 'running';
+        requestAnimationFrame(frame);
+    }
+
+    main().catch(err => {
+        document.getElementById('status').textContent = 'error: ' + err.message;
+        console.error(err);
+    });
+    </script>
+</body>
+</html>
