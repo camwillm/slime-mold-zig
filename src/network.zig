@@ -9,20 +9,20 @@ pub const TOTAL_EDGES: usize = HORIZ_EDGES + VERT_EDGES; // 19,800
 pub const TOTAL_NODES: usize = WIDTH * HEIGHT;           // 10,000
 
 // --- Spiderweb growth model ---
-pub const INITIAL_RADIUS: usize = 5;  // starting blob radius in grid cells
+pub const INITIAL_RADIUS: usize = 8;  // starting blob radius in grid cells
 
 // --- Simulation constants (doc 10) ---
-pub const INITIAL_CONDUCTANCE:    f32   = 0.01;
+pub const INITIAL_CONDUCTANCE:    f32   = 0.1;
 pub const MIN_CONDUCTANCE:        f32   = 0.001; // lower kill floor; initial blob at 0.01 has room to decay
 pub const MAX_CONDUCTANCE:        f32   = 10.0;
-pub const PRESSURE_SOURCE:        f32   = 1.0;
+pub const PRESSURE_SOURCE:        f32   = 10.0;
 pub const MU:                     f32   = 1.0;
-pub const DECAY:                  f32   = 0.1;   // gentle decay; flow must exceed 0.1*D to survive
+pub const DECAY:                  f32   = 0.05;  // blob survives ~921 ticks (needs ~800 to bridge 40-cell gap to food)
 pub const DT:                     f32   = 0.1;
-pub const GAUSS_ITER:             usize = 15;
+pub const GAUSS_ITER:             usize = 50;
 
 // Food gradient — spatial diffusion (not edge-restricted so scent spreads ahead of frontier)
-pub const GRADIENT_WEIGHT:          f32 = 0.5;
+pub const GRADIENT_WEIGHT:          f32 = 0.0;  // gradient guides expansion only, not conductance survival
 pub const GRADIENT_DIFFUSION_BLEND: f32 = 0.3;  // 30% neighbor blend per tick (faster than 5%)
 
 // Peristalsis (Alim 2013)

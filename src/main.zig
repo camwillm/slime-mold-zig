@@ -15,6 +15,7 @@ var first_food_idx:   usize = 0;
 var default_sink_idx: usize = 0;
 
 var rng_state: u32 = 54321;
+var debug_active_after_init: u32 = 0;
 
 fn xorshift(s: *u32) f32 {
     s.* ^= s.* << 13;
@@ -27,6 +28,11 @@ fn xorshift(s: *u32) f32 {
 // All other edges start inactive (zero conductance). The frontier expands every 10 ticks
 // guided by the food gradient (see adapt.expandFrontier).
 fn spiderwebInit() void {
+    // Zero all edges first — ensures clean state regardless of what called us.
+    @memset(network.active,      0);
+    @memset(network.conductance, 0);
+    @memset(network.d_eff,       0);
+
     const cx: i32 = @intCast(net_mod.WIDTH  / 2);
     const cy: i32 = @intCast(net_mod.HEIGHT / 2);
     const r: f32  = @floatFromInt(net_mod.INITIAL_RADIUS);
@@ -55,7 +61,14 @@ fn spiderwebInit() void {
             network.d_eff[ei]       = network.conductance[ei];
         }
     }
+
+    // Capture count for debug export — measured inside this function, not affected by JS timing.
+    var dbg: u32 = 0;
+    for (network.active) |a| { if (a != 0) dbg += 1; }
+    debug_active_after_init = dbg;
 }
+
+export fn getDebugActiveCount() u32 { return debug_active_after_init; }
 
 export fn init(width: u32, height: u32) void {
     if (initialized) {
@@ -100,7 +113,17 @@ export fn step() void {
     signal_mod.advectSoftening(&network);
     signal_mod.updateFood(&network);
     signal_mod.diffuseFoodGradient(&network);
-    if (tick % 10 == 0) adapt.expandFrontier(&network);
+    if (tick % 20 == 0) adapt.expandFrontier(&network);
+}
+
+// Pre-diffuse food gradient N times without advancing simulation tick.
+// Call after placing food so the scent cloud reaches the blob before decay kills it.
+export fn warmupGradient(steps: u32) void {
+    if (!initialized) return;
+    var i: u32 = 0;
+    while (i < steps) : (i += 1) {
+        signal_mod.diffuseFoodGradient(&network);
+    }
 }
 
 // --- Food placement (doc 07 sink lifecycle, Phase 1 scheme) ---
@@ -150,6 +173,7 @@ export fn addSource(x: u32, y: u32, strength: f32) void {
     const idx = yi * network.width + xi;
     network.food[idx]        = @min(@max(strength, 0.0), 255.0);
     network.is_source[idx]   = 1;
+    network.is_sink[idx]     = 0;  // never both
     network.is_boundary[idx] = 0;
     food_count += 1;
 }
@@ -161,7 +185,17 @@ export fn addSink(x: u32, y: u32) void {
     if (xi >= network.width or yi >= network.height) return;
     const idx = yi * network.width + xi;
     network.is_sink[idx]     = 1;
+    network.is_source[idx]   = 0;  // never both
     network.is_boundary[idx] = 0;
+}
+
+// Seed food gradient at a location without changing pressure roles.
+// Use for food sinks so the scent cloud diffuses toward the organism.
+export fn seedGradient(x: u32, y: u32, v: f32) void {
+    if (!initialized) return;
+    const idx = @as(usize, y) * network.width + @as(usize, x);
+    network.food[idx]          = @min(@max(v, 0.0), 255.0);
+    network.food_gradient[idx] = network.food[idx];
 }
 
 // --- Memory pointers ---
@@ -174,6 +208,8 @@ export fn getPhasePtr()         [*]f32 { return network.phase.ptr; }
 export fn getFoodPtr()          [*]f32 { return network.food.ptr; }
 export fn getSofteningPtr()     [*]f32 { return network.softening.ptr; }
 export fn getFoodGradientPtr()  [*]f32 { return network.food_gradient.ptr; }
+
+export fn getTick() u64 { return tick; }
 
 // --- Counts ---
 

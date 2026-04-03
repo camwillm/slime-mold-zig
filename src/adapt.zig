@@ -102,11 +102,12 @@ inline fn updateEdge(net: *Network, e: usize, ni: usize, nj: usize) void {
     // Spiderweb model: dead edges don't update. Only frontier expansion reactivates edges.
     if (net.active[e] == 0) return;
 
-    const q              = @abs(net.flow[e]);
+    const absQ           = @abs(net.flow[e]);
+    const effective_Q    = absQ; // all flow reinforces — Tero feedback requires no threshold
     const softening_avg  = (net.softening[ni] + net.softening[nj]) * 0.5;
     const gradient_avg   = (net.food_gradient[ni] + net.food_gradient[nj]) * 0.5;
     const gradient_boost = net_mod.GRADIENT_WEIGHT * gradient_avg / 255.0;
-    const dD             = net_mod.DT * (q + gradient_boost + net_mod.SOFTENING_WEIGHT * softening_avg - net_mod.DECAY * net.conductance[e]);
+    const dD             = net_mod.DT * (effective_Q + gradient_boost + net_mod.SOFTENING_WEIGHT * softening_avg - net_mod.DECAY * net.conductance[e]);
     net.conductance[e]  += dD;
 
     if (net.conductance[e] < net_mod.MIN_CONDUCTANCE) {
@@ -130,8 +131,14 @@ inline fn xorshift32(s: *u32) f32 {
 // For every node on the active frontier, try to activate each inactive neighbor edge
 // if the food gradient at that location exceeds EXPAND_THRESHOLD.
 pub fn expandFrontier(net: *Network) void {
-    const EXPAND_THRESHOLD:   f32 = 0.5;
+    const EXPAND_THRESHOLD:   f32 = 0.3;  // low enough to follow diffused gradient
     const EXPAND_CONDUCTANCE: f32 = 0.008;
+    const COVERAGE_CAP:       f32 = 0.60; // stop expanding once 60% covered; let Tero prune
+
+    var active_count: u32 = 0;
+    for (net.active) |a| { if (a != 0) active_count += 1; }
+    const coverage = @as(f32, @floatFromInt(active_count)) / @as(f32, @floatFromInt(net_mod.TOTAL_EDGES));
+    if (coverage >= COVERAGE_CAP) return;
 
     const w = net.width;
     const h = net.height;

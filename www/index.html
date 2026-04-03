@@ -186,39 +186,49 @@ async function main() {
         foodNodes.push({ gx, gy, nodeIdx, px, py, role, consumed: false, food_placed: 255 });
         wasm.setFood(gx, gy, 255.0);
         totalFoodPlaced++;
+        const tick = Number(wasm.getTick());
+        console.log(`[tick=${tick}] food placed: grid(${gx},${gy}) pixel(${px},${py}) role=${role} total_food=${totalFoodPlaced}`);
+        wasm.warmupGradient(5000);
+        console.log(`[tick=${tick}] gradient warmed up → active=${wasm.getActiveEdgeCount()} coverage=${(wasm.getActiveEdgeCount()/19800*100).toFixed(1)}%`);
     }
 
     function applyPreset() {
-        // 100×100 grid preset — sources at left/right center, sink at center.
-        // A index = 50*100+10 = 5010
-        // B index = 50*100+90 = 5090
-        // Sink    = 50*100+50 = 5050
+        // Biologically correct pressure roles:
+        //   Organism (50,50) = SOURCE, P=10 — cytoplasm pumped outward
+        //   Food A   (10,50) = SINK,   P=0  — food attracts flow
+        //   Food B   (90,50) = SINK,   P=0  — food attracts flow
         wasm.clearFood();
 
-        // Source A: (10, 50)
-        wasm.addSource(10, 50, 255.0);
-        foodNodes.push({ gx: 10, gy: 50, nodeIdx: 50 * GRID_W + 10,
-            px: 10 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
-            role: 'source', consumed: false });
-
-        // Source B: (90, 50)
-        wasm.addSource(90, 50, 255.0);
-        foodNodes.push({ gx: 90, gy: 50, nodeIdx: 50 * GRID_W + 90,
-            px: 90 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
-            role: 'source', consumed: false });
-
-        // Sink: (50, 50)
-        wasm.addSink(50, 50);
+        // Organism origin: high-pressure source
+        wasm.addSource(50, 50, 0.0);  // food=0, just a pressure source
         foodNodes.push({ gx: 50, gy: 50, nodeIdx: 50 * GRID_W + 50,
             px: 50 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
-            role: 'sink', consumed: false });
+            role: 'sink', consumed: false });  // 'sink' role = blue dot visual
+
+        // Food A: pressure sink + gradient seed
+        wasm.addSink(10, 50);
+        wasm.seedGradient(10, 50, 255.0);
+        foodNodes.push({ gx: 10, gy: 50, nodeIdx: 50 * GRID_W + 10,
+            px: 10 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
+            role: 'source', consumed: false });  // 'source' role = green dot visual
+
+        // Food B: pressure sink + gradient seed
+        wasm.addSink(90, 50);
+        wasm.seedGradient(90, 50, 255.0);
+        foodNodes.push({ gx: 90, gy: 50, nodeIdx: 50 * GRID_W + 90,
+            px: 90 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
+            role: 'source', consumed: false });  // 'source' role = green dot visual
 
         totalFoodPlaced += 2;
+        console.log('[preset] organism: grid(50,50) P=10 | food A: grid(10,50) P=0 | food B: grid(90,50) P=0');
     }
 
     wasm.init(GRID_W, GRID_H);
+    console.log('Active edges at init (JS view):', wasm.getActiveEdgeCount());
+    console.log('Active edges at init (Zig internal):', wasm.getDebugActiveCount());
     refreshViews();
     applyPreset();
+    wasm.warmupGradient(5000);
 
     document.getElementById('wrap').addEventListener('click', (e) => {
         const rect = bgCanvas.getBoundingClientRect();
@@ -237,6 +247,7 @@ async function main() {
         totalFoodPlaced  = 0;
         tickCount        = 0;
         applyPreset();
+        wasm.warmupGradient(5000);
     });
 
     document.getElementById('btn-preset').addEventListener('click', () => {
@@ -247,6 +258,7 @@ async function main() {
         totalFoodPlaced  = 0;
         tickCount        = 0;
         applyPreset();
+        wasm.warmupGradient(5000);
     });
 
     // --- Rendering ---
@@ -254,14 +266,14 @@ async function main() {
     function drawEdges() {
         bgCtx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
-        const scale = bgCanvas.width / 200;
+        const scale = SCALE;
         const thin = new Path2D();
         const med  = new Path2D();
         const thick = new Path2D();
 
         for (let e = 0; e < TOTAL_EDGES; e++) {
             const D = conductance[e];
-            if (D < 0.01) continue;
+            if (D < 0.001) continue;
 
             let ni, nj;
             if (e < HORIZ_COUNT) {
@@ -317,7 +329,7 @@ async function main() {
             const gy = Math.floor(i / GRID_W);
             const px = (gx + 0.5) * SCALE;
             const py = (gy + 0.5) * SCALE;
-            const alpha = Math.min(0.4, g / 255 * 0.4);
+            const alpha = g / 255 * 0.06;
             uiCtx.fillStyle = `rgba(180,255,100,${alpha.toFixed(3)})`;
             uiCtx.beginPath();
             uiCtx.arc(px, py, SCALE * 0.8, 0, Math.PI * 2);
@@ -427,6 +439,21 @@ async function main() {
         for (let i = 0; i < steps; i++) {
             wasm.step();
             tickCount++;
+        }
+        const currentTick = Number(wasm.getTick());
+        if (currentTick % 50 === 0) {
+            const active  = wasm.getActiveEdgeCount();
+            const veins   = wasm.getMajorVeinCount();
+            const maxD    = wasm.getMaxConductance().toFixed(3);
+            const avgQ    = wasm.getAvgFlow().toFixed(4);
+            const nodes   = wasm.getActiveNodeCount();
+            console.log(
+                `tick=${String(currentTick).padStart(5)} | ` +
+                `active=${String(active).padStart(5)} (${(active/19800*100).toFixed(1)}%) | ` +
+                `veins=${String(veins).padStart(4)} | ` +
+                `maxD=${maxD} | avgQ=${avgQ} | ` +
+                `nodes=${nodes}`
+            );
         }
         accumSim += performance.now() - t0;
 
