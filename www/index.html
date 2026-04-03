@@ -116,6 +116,9 @@
         <div id="st-food">Food: —</div>
         <div id="st-tick">Tick: —</div>
         <div id="st-fps">FPS: —</div>
+        <div id="st-anodes">Active nodes: —</div>
+        <div id="st-grad">Gradient: —%</div>
+        <div id="st-perf">sim: — ms | render: — ms</div>
     </div>
 </div>
 
@@ -131,11 +134,11 @@
 
 <script>
 // --- Grid / canvas constants (doc 07, 09) ---
-const GRID_W = 200, GRID_H = 200;
+const GRID_W = 100, GRID_H = 100;
 const CANVAS_W = 800, CANVAS_H = 800;
-const SCALE = CANVAS_W / GRID_W;           // 4px per grid unit
-const HORIZ_COUNT = (GRID_W - 1) * GRID_H; // 39,800
-const VERT_COUNT  = GRID_W * (GRID_H - 1); // 39,800
+const SCALE = CANVAS_W / GRID_W;           // 8px per grid unit
+const HORIZ_COUNT = (GRID_W - 1) * GRID_H; // 9,900
+const VERT_COUNT  = GRID_W * (GRID_H - 1); // 9,900
 const TOTAL_EDGES = HORIZ_COUNT + VERT_COUNT;
 const NODE_COUNT  = GRID_W * GRID_H;
 
@@ -158,13 +161,14 @@ async function main() {
     const uiCtx  = uiCanvas.getContext('2d');
 
     // --- WASM memory views (refresh after each init()) ---
-    let conductance, phase, signal, food;
+    let conductance, phase, signal, food, foodGradient;
     function refreshViews() {
         const buf = wasm.memory.buffer;
-        conductance = new Float32Array(buf, wasm.getConductancePtr(), TOTAL_EDGES);
-        phase       = new Float32Array(buf, wasm.getPhasePtr(),       TOTAL_EDGES);
-        signal      = new Float32Array(buf, wasm.getSignalPtr(),      NODE_COUNT);
-        food        = new Float32Array(buf, wasm.getFoodPtr(),        NODE_COUNT);
+        conductance  = new Float32Array(buf, wasm.getConductancePtr(),  TOTAL_EDGES);
+        phase        = new Float32Array(buf, wasm.getPhasePtr(),        TOTAL_EDGES);
+        signal       = new Float32Array(buf, wasm.getSignalPtr(),       NODE_COUNT);
+        food         = new Float32Array(buf, wasm.getFoodPtr(),         NODE_COUNT);
+        foodGradient = new Float32Array(buf, wasm.getFoodGradientPtr(), NODE_COUNT);
     }
 
     // --- Food / scar tracking ---
@@ -185,28 +189,28 @@ async function main() {
     }
 
     function applyPreset() {
-        // Test 1.1 (doc 12): two food sources at ends, sink at center.
-        // A index = 100*200+20  = 20020
-        // B index = 100*200+180 = 20180
-        // Sink    = 100*200+100 = 20100
+        // 100×100 grid preset — sources at left/right center, sink at center.
+        // A index = 50*100+10 = 5010
+        // B index = 50*100+90 = 5090
+        // Sink    = 50*100+50 = 5050
         wasm.clearFood();
 
-        // Source A: (20, 100)
-        wasm.addSource(20, 100, 255.0);
-        foodNodes.push({ gx: 20, gy: 100, nodeIdx: 100 * GRID_W + 20,
-            px: 20 * SCALE + SCALE / 2, py: 100 * SCALE + SCALE / 2,
+        // Source A: (10, 50)
+        wasm.addSource(10, 50, 255.0);
+        foodNodes.push({ gx: 10, gy: 50, nodeIdx: 50 * GRID_W + 10,
+            px: 10 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
             role: 'source', consumed: false });
 
-        // Source B: (180, 100)
-        wasm.addSource(180, 100, 255.0);
-        foodNodes.push({ gx: 180, gy: 100, nodeIdx: 100 * GRID_W + 180,
-            px: 180 * SCALE + SCALE / 2, py: 100 * SCALE + SCALE / 2,
+        // Source B: (90, 50)
+        wasm.addSource(90, 50, 255.0);
+        foodNodes.push({ gx: 90, gy: 50, nodeIdx: 50 * GRID_W + 90,
+            px: 90 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
             role: 'source', consumed: false });
 
-        // Sink: (100, 100)
-        wasm.addSink(100, 100);
-        foodNodes.push({ gx: 100, gy: 100, nodeIdx: 100 * GRID_W + 100,
-            px: 100 * SCALE + SCALE / 2, py: 100 * SCALE + SCALE / 2,
+        // Sink: (50, 50)
+        wasm.addSink(50, 50);
+        foodNodes.push({ gx: 50, gy: 50, nodeIdx: 50 * GRID_W + 50,
+            px: 50 * SCALE + SCALE / 2, py: 50 * SCALE + SCALE / 2,
             role: 'sink', consumed: false });
 
         totalFoodPlaced += 2;
@@ -248,49 +252,77 @@ async function main() {
     // --- Rendering ---
 
     function drawEdges() {
-        bgCtx.fillStyle = '#000800';
-        bgCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+        bgCtx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
         const scale = bgCanvas.width / 200;
+        const thin = new Path2D();
+        const med  = new Path2D();
+        const thick = new Path2D();
+
         for (let e = 0; e < TOTAL_EDGES; e++) {
             const D = conductance[e];
-            if (D < 0.005) continue;
+            if (D < 0.01) continue;
 
             let ni, nj;
             if (e < HORIZ_COUNT) {
-                const row = Math.floor(e / 199);
-                const col = e % 199;
-                ni = row * 200 + col;
+                const row = Math.floor(e / (GRID_W - 1));
+                const col = e % (GRID_W - 1);
+                ni = row * GRID_W + col;
                 nj = ni + 1;
             } else {
                 const idx = e - HORIZ_COUNT;
-                const row = Math.floor(idx / 200);
-                const col = idx % 200;
-                ni = row * 200 + col;
-                nj = ni + 200;
+                const row = Math.floor(idx / GRID_W);
+                const col = idx % GRID_W;
+                ni = row * GRID_W + col;
+                nj = ni + GRID_W;
             }
 
-            const x1 = (ni % 200 + 0.5) * scale;
-            const y1 = (Math.floor(ni / 200) + 0.5) * scale;
-            const x2 = (nj % 200 + 0.5) * scale;
-            const y2 = (Math.floor(nj / 200) + 0.5) * scale;
+            const x1 = (ni % GRID_W + 0.5) * scale;
+            const y1 = (Math.floor(ni / GRID_W) + 0.5) * scale;
+            const x2 = (nj % GRID_W + 0.5) * scale;
+            const y2 = (Math.floor(nj / GRID_W) + 0.5) * scale;
 
-            const wave = Math.sin(phase[e]);
-            const modulation = wave * 40 * Math.min(1, D * 2);
-            const brightness = Math.min(255, Math.max(0, 60 + D * 120 + modulation));
-            bgCtx.beginPath();
-            bgCtx.moveTo(x1, y1);
-            bgCtx.lineTo(x2, y2);
-            bgCtx.lineWidth = Math.min(3, Math.max(0.5, D * 2));
-            bgCtx.strokeStyle = `rgba(0, ${brightness}, 0, ${Math.min(1, D * 2)})`;
-            bgCtx.stroke();
+            if (D < 0.5) {
+                thin.moveTo(x1, y1); thin.lineTo(x2, y2);
+            } else if (D < 2.0) {
+                med.moveTo(x1, y1);  med.lineTo(x2, y2);
+            } else {
+                thick.moveTo(x1, y1); thick.lineTo(x2, y2);
+            }
         }
+
+        bgCtx.lineWidth   = 0.5;
+        bgCtx.strokeStyle = 'rgba(0,80,0,0.6)';
+        bgCtx.stroke(thin);
+
+        bgCtx.lineWidth   = 1;
+        bgCtx.strokeStyle = 'rgba(0,200,50,0.9)';
+        bgCtx.stroke(med);
+
+        bgCtx.lineWidth   = 2;
+        bgCtx.strokeStyle = 'rgba(180,255,150,1)';
+        bgCtx.stroke(thick);
     }
 
     function drawNodes() {
         uiCtx.clearRect(0, 0, CANVAS_W, CANVAS_H);
         const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 400);
         const now   = Date.now();
+
+        // Fix 5: food gradient scent cloud (faint yellow-green glow per node)
+        for (let i = 0; i < NODE_COUNT; i++) {
+            const g = foodGradient[i];
+            if (g < 5) continue;
+            const gx = i % GRID_W;
+            const gy = Math.floor(i / GRID_W);
+            const px = (gx + 0.5) * SCALE;
+            const py = (gy + 0.5) * SCALE;
+            const alpha = Math.min(0.4, g / 255 * 0.4);
+            uiCtx.fillStyle = `rgba(180,255,100,${alpha.toFixed(3)})`;
+            uiCtx.beginPath();
+            uiCtx.arc(px, py, SCALE * 0.8, 0, Math.PI * 2);
+            uiCtx.fill();
+        }
 
         // Food source / sink glows
         for (const node of foodNodes) {
@@ -356,6 +388,8 @@ async function main() {
     let tickCount = 0;
     let lastStats = performance.now();
     let totalFood = 255 * 2; // updated on reset
+    let accumSim    = 0;  // ms spent in wasm.step() per second
+    let accumRender = 0;  // ms spent in drawEdges+drawNodes per second
 
     function updateStats() {
         const activeEdges = wasm.getActiveEdgeCount();
@@ -375,16 +409,26 @@ async function main() {
         document.getElementById('st-food').textContent   = `Food: ${foodPct}%`;
         document.getElementById('st-tick').textContent   = `Tick: ${tickCount.toLocaleString()}`;
         document.getElementById('st-fps').textContent    = `FPS: ${frames}`;
-        frames = 0;
+        const activeNodes = wasm.getActiveNodeCount();
+        document.getElementById('st-anodes').textContent = `Active nodes: ${activeNodes.toLocaleString()} / ${NODE_COUNT.toLocaleString()}`;
+        let gradNodes = 0;
+        for (let i = 0; i < NODE_COUNT; i++) { if (foodGradient[i] > 5) gradNodes++; }
+        document.getElementById('st-grad').textContent   = `Gradient: ${(gradNodes / NODE_COUNT * 100).toFixed(1)}%`;
+        const fps = frames || 1;
+        document.getElementById('st-perf').textContent  =
+            `sim: ${(accumSim/fps).toFixed(1)}ms | render: ${(accumRender/fps).toFixed(1)}ms`;
+        frames = 0; accumSim = 0; accumRender = 0;
     }
 
     // --- Main loop ---
     function frame() {
         const steps = parseInt(speedSlider.value, 10);
+        const t0 = performance.now();
         for (let i = 0; i < steps; i++) {
             wasm.step();
             tickCount++;
         }
+        accumSim += performance.now() - t0;
 
         // Check for newly consumed food (food[nodeIdx] → 0)
         for (const node of foodNodes) {
@@ -394,8 +438,10 @@ async function main() {
             }
         }
 
+        const t1 = performance.now();
         drawEdges();
         drawNodes();
+        accumRender += performance.now() - t1;
 
         frames++;
         const now = performance.now();

@@ -14,6 +14,49 @@ var food_count:       u32   = 0;
 var first_food_idx:   usize = 0;
 var default_sink_idx: usize = 0;
 
+var rng_state: u32 = 54321;
+
+fn xorshift(s: *u32) f32 {
+    s.* ^= s.* << 13;
+    s.* ^= s.* >> 17;
+    s.* ^= s.* << 5;
+    return @as(f32, @floatFromInt(s.* & 0xFFFF)) / 65536.0;
+}
+
+// Spiderweb growth model: activate only edges within INITIAL_RADIUS of grid center.
+// All other edges start inactive (zero conductance). The frontier expands every 10 ticks
+// guided by the food gradient (see adapt.expandFrontier).
+fn spiderwebInit() void {
+    const cx: i32 = @intCast(net_mod.WIDTH  / 2);
+    const cy: i32 = @intCast(net_mod.HEIGHT / 2);
+    const r: f32  = @floatFromInt(net_mod.INITIAL_RADIUS);
+
+    for (0..net_mod.HORIZ_EDGES) |e| {
+        const row: i32 = @intCast(e / (net_mod.WIDTH - 1));
+        const col: i32 = @intCast(e % (net_mod.WIDTH - 1));
+        const dx: f32  = @floatFromInt(col - cx);
+        const dy: f32  = @floatFromInt(row - cy);
+        if (@sqrt(dx * dx + dy * dy) <= r) {
+            network.active[e]      = 1;
+            network.conductance[e] = net_mod.INITIAL_CONDUCTANCE + xorshift(&rng_state) * 0.004;
+            network.d_eff[e]       = network.conductance[e];
+        }
+    }
+
+    for (0..net_mod.VERT_EDGES) |e| {
+        const row: i32 = @intCast(e / net_mod.WIDTH);
+        const col: i32 = @intCast(e % net_mod.WIDTH);
+        const dx: f32  = @floatFromInt(col - cx);
+        const dy: f32  = @floatFromInt(row - cy);
+        if (@sqrt(dx * dx + dy * dy) <= r) {
+            const ei               = net_mod.HORIZ_EDGES + e;
+            network.active[ei]      = 1;
+            network.conductance[ei] = net_mod.INITIAL_CONDUCTANCE + xorshift(&rng_state) * 0.004;
+            network.d_eff[ei]       = network.conductance[ei];
+        }
+    }
+}
+
 export fn init(width: u32, height: u32) void {
     if (initialized) {
         network.deinit();
@@ -26,6 +69,7 @@ export fn init(width: u32, height: u32) void {
     tick       = 0;
     food_count = 0;
     initialized = true;
+    spiderwebInit();
 }
 
 export fn reset() void {
@@ -34,6 +78,7 @@ export fn reset() void {
     default_sink_idx = (network.height / 2) * network.width + (network.width / 2);
     tick       = 0;
     food_count = 0;
+    spiderwebInit();
 }
 
 // Full simulation tick — all phases in order (doc 08):
@@ -54,6 +99,8 @@ export fn step() void {
     signal_mod.advectSignal(&network);
     signal_mod.advectSoftening(&network);
     signal_mod.updateFood(&network);
+    signal_mod.diffuseFoodGradient(&network);
+    if (tick % 10 == 0) adapt.expandFrontier(&network);
 }
 
 // --- Food placement (doc 07 sink lifecycle, Phase 1 scheme) ---
@@ -119,13 +166,14 @@ export fn addSink(x: u32, y: u32) void {
 
 // --- Memory pointers ---
 
-export fn getPressurePtr()    [*]f32 { return network.pressure.ptr; }
-export fn getConductancePtr() [*]f32 { return network.conductance.ptr; }
-export fn getFlowPtr()        [*]f32 { return network.flow.ptr; }
-export fn getSignalPtr()      [*]f32 { return network.signal.ptr; }
-export fn getPhasePtr()       [*]f32 { return network.phase.ptr; }
-export fn getFoodPtr()        [*]f32 { return network.food.ptr; }
-export fn getSofteningPtr()   [*]f32 { return network.softening.ptr; }
+export fn getPressurePtr()      [*]f32 { return network.pressure.ptr; }
+export fn getConductancePtr()   [*]f32 { return network.conductance.ptr; }
+export fn getFlowPtr()          [*]f32 { return network.flow.ptr; }
+export fn getSignalPtr()        [*]f32 { return network.signal.ptr; }
+export fn getPhasePtr()         [*]f32 { return network.phase.ptr; }
+export fn getFoodPtr()          [*]f32 { return network.food.ptr; }
+export fn getSofteningPtr()     [*]f32 { return network.softening.ptr; }
+export fn getFoodGradientPtr()  [*]f32 { return network.food_gradient.ptr; }
 
 // --- Counts ---
 
@@ -142,6 +190,34 @@ export fn getActiveEdgeCount() u32 {
     if (!initialized) return 0;
     var count: u32 = 0;
     for (network.active) |a| { if (a != 0) count += 1; }
+    return count;
+}
+
+export fn getActiveNodeCount() u32 {
+    if (!initialized) return 0;
+    const w = network.width;
+    const h = network.height;
+    var node_active = [_]bool{false} ** net_mod.TOTAL_NODES;
+    for (0..h) |y| {
+        for (0..w - 1) |x| {
+            const e = network.horizEdgeIndex(x, y);
+            if (network.active[e] != 0) {
+                node_active[y * w + x]       = true;
+                node_active[y * w + (x + 1)] = true;
+            }
+        }
+    }
+    for (0..h - 1) |y| {
+        for (0..w) |x| {
+            const e = network.vertEdgeIndex(x, y);
+            if (network.active[e] != 0) {
+                node_active[y * w + x]       = true;
+                node_active[(y + 1) * w + x] = true;
+            }
+        }
+    }
+    var count: u32 = 0;
+    for (node_active) |a| { if (a) count += 1; }
     return count;
 }
 

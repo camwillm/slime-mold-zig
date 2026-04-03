@@ -1,15 +1,29 @@
 const std = @import("std");
 
+// --- Grid dimensions ---
+pub const WIDTH:       usize = 100;
+pub const HEIGHT:      usize = 100;
+pub const HORIZ_EDGES: usize = (WIDTH - 1) * HEIGHT;     // 9,900
+pub const VERT_EDGES:  usize = WIDTH * (HEIGHT - 1);     // 9,900
+pub const TOTAL_EDGES: usize = HORIZ_EDGES + VERT_EDGES; // 19,800
+pub const TOTAL_NODES: usize = WIDTH * HEIGHT;           // 10,000
+
+// --- Spiderweb growth model ---
+pub const INITIAL_RADIUS: usize = 5;  // starting blob radius in grid cells
+
 // --- Simulation constants (doc 10) ---
 pub const INITIAL_CONDUCTANCE:    f32   = 0.01;
-pub const MIN_CONDUCTANCE:        f32   = 0.0001;
+pub const MIN_CONDUCTANCE:        f32   = 0.001; // lower kill floor; initial blob at 0.01 has room to decay
 pub const MAX_CONDUCTANCE:        f32   = 10.0;
-pub const REACTIVATION_THRESHOLD: f32   = 0.001;
 pub const PRESSURE_SOURCE:        f32   = 1.0;
 pub const MU:                     f32   = 1.0;
-pub const DECAY:                  f32   = 0.01;
+pub const DECAY:                  f32   = 0.1;   // gentle decay; flow must exceed 0.1*D to survive
 pub const DT:                     f32   = 0.1;
-pub const GAUSS_ITER:             usize = 25;
+pub const GAUSS_ITER:             usize = 15;
+
+// Food gradient — spatial diffusion (not edge-restricted so scent spreads ahead of frontier)
+pub const GRADIENT_WEIGHT:          f32 = 0.5;
+pub const GRADIENT_DIFFUSION_BLEND: f32 = 0.3;  // 30% neighbor blend per tick (faster than 5%)
 
 // Peristalsis (Alim 2013)
 pub const OMEGA:          f32 = std.math.tau / 100.0; // 2π/100 — 100-tick period
@@ -41,14 +55,15 @@ pub const Network = struct {
     edge_count:  usize,
 
     // Node arrays [node_count]
-    pressure:    []f32,
-    signal:      []f32,
-    calcium:     []f32,
-    food:        []f32,
-    softening:   []f32,
-    is_source:   []u8,
-    is_sink:     []u8,
-    is_boundary: []u8,
+    pressure:      []f32,
+    signal:        []f32,
+    calcium:       []f32,
+    food:          []f32,
+    food_gradient: []f32,  // diffuses outward from food sources (Fix 3)
+    softening:     []f32,
+    is_source:     []u8,
+    is_sink:       []u8,
+    is_boundary:   []u8,
 
     // Edge arrays [edge_count]
     conductance: []f32,
@@ -81,6 +96,10 @@ pub const Network = struct {
         errdefer allocator.free(food);
         @memset(food, 0);
 
+        const food_gradient = try allocator.alloc(f32, node_count);
+        errdefer allocator.free(food_gradient);
+        @memset(food_gradient, 0);
+
         const softening   = try allocator.alloc(f32, node_count);
         errdefer allocator.free(softening);
         @memset(softening, 0);
@@ -99,7 +118,7 @@ pub const Network = struct {
 
         const conductance = try allocator.alloc(f32, edge_count);
         errdefer allocator.free(conductance);
-        @memset(conductance, INITIAL_CONDUCTANCE);
+        @memset(conductance, 0);  // spiderweb: all edges start dead
 
         const flow        = try allocator.alloc(f32, edge_count);
         errdefer allocator.free(flow);
@@ -111,24 +130,25 @@ pub const Network = struct {
 
         const d_eff       = try allocator.alloc(f32, edge_count);
         errdefer allocator.free(d_eff);
-        @memset(d_eff, INITIAL_CONDUCTANCE);
+        @memset(d_eff, 0);
 
         const active      = try allocator.alloc(u8, edge_count);
         errdefer allocator.free(active);
-        @memset(active, 1);
+        @memset(active, 0);  // spiderweb: all edges inactive; main.zig activates initial blob
 
         var net = Network{
-            .width       = width,
-            .height      = height,
-            .node_count  = node_count,
-            .horiz_count = horiz_count,
-            .vert_count  = vert_count,
-            .edge_count  = edge_count,
-            .pressure    = pressure,
-            .signal      = signal,
-            .calcium     = calcium,
-            .food        = food,
-            .softening   = softening,
+            .width         = width,
+            .height        = height,
+            .node_count    = node_count,
+            .horiz_count   = horiz_count,
+            .vert_count    = vert_count,
+            .edge_count    = edge_count,
+            .pressure      = pressure,
+            .signal        = signal,
+            .calcium       = calcium,
+            .food          = food,
+            .food_gradient = food_gradient,
+            .softening     = softening,
             .is_source   = is_source,
             .is_sink     = is_sink,
             .is_boundary = is_boundary,
@@ -150,15 +170,16 @@ pub const Network = struct {
         @memset(self.pressure,    0);
         @memset(self.signal,      0);
         @memset(self.calcium,     0);
-        @memset(self.food,        0);
-        @memset(self.softening,   0);
+        @memset(self.food,          0);
+        @memset(self.food_gradient, 0);
+        @memset(self.softening,     0);
         @memset(self.is_source,   0);
         @memset(self.is_sink,     0);
         @memset(self.is_boundary, 0);
-        @memset(self.conductance, INITIAL_CONDUCTANCE);
+        @memset(self.conductance, 0);
         @memset(self.flow,        0);
-        @memset(self.d_eff,       INITIAL_CONDUCTANCE);
-        @memset(self.active,      1);
+        @memset(self.d_eff,       0);
+        @memset(self.active,      0);
 
         self.initBoundaries();
         self.randomizePhases(42);
@@ -170,6 +191,7 @@ pub const Network = struct {
         self.allocator.free(self.signal);
         self.allocator.free(self.calcium);
         self.allocator.free(self.food);
+        self.allocator.free(self.food_gradient);
         self.allocator.free(self.softening);
         self.allocator.free(self.is_source);
         self.allocator.free(self.is_sink);

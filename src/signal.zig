@@ -169,6 +169,41 @@ pub fn advectSoftening(net: *Network) void {
     }
 }
 
+// Food gradient diffuses through space (not restricted to active edges) so the scent
+// can reach the frontier before tubes exist there — prerequisite for guided growth.
+// Uses GRADIENT_DIFFUSION_BLEND (30%) for faster propagation than the 5% original.
+pub fn diffuseFoodGradient(net: *Network) void {
+    const w     = net.width;
+    const h     = net.height;
+    const blend = net_mod.GRADIENT_DIFFUSION_BLEND;
+    const keep  = 1.0 - blend;
+
+    for (0..h) |y| {
+        for (0..w) |x| {
+            const i = y * w + x;
+            if (net.is_boundary[i] != 0) continue;
+
+            if (net.food[i] > 0.0) {
+                net.food_gradient[i] = net.food[i];
+            } else {
+                // Diffuse through all space regardless of edge activity.
+                var sum:   f32 = 0.0;
+                var count: u32 = 0;
+                if (x > 0)     { sum += net.food_gradient[y * w + (x - 1)]; count += 1; }
+                if (x < w - 1) { sum += net.food_gradient[y * w + (x + 1)]; count += 1; }
+                if (y > 0)     { sum += net.food_gradient[(y - 1) * w + x]; count += 1; }
+                if (y < h - 1) { sum += net.food_gradient[(y + 1) * w + x]; count += 1; }
+                if (count > 0) {
+                    net.food_gradient[i] = keep * net.food_gradient[i] +
+                        blend * (sum / @as(f32, @floatFromInt(count)));
+                }
+                net.food_gradient[i] *= 0.998;
+                if (net.food_gradient[i] < 0.0) net.food_gradient[i] = 0.0;
+            }
+        }
+    }
+}
+
 // Phase 7: consume food at source nodes; trigger softening burst on depletion.
 pub fn updateFood(net: *Network) void {
     const w = net.width;
